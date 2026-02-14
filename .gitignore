@@ -17,3 +17,8 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# Experiments (allow tau2_agent, ignore temp files)
+experiments/eval.py
+experiments/play.json
+experiments/tau2_agent/tau2_data/

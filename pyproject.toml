@@ -14,7 +14,18 @@ dev = [
     "pytest>=9.0.2",
 ]
 
+[tool.setuptools]
+packages = ["mast"]
+
+[tool.setuptools.package-data]
+"*" = ["*.txt"]
+
 [tool.pytest.ini_options]
 markers = [
     "integration: marks tests as integration tests (require OPENAI_API_KEY)",
+]
+
+[tool.uv.workspace]
+members = [
+    "experiments/tau2_agent",
 ]
