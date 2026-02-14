@@ -101,6 +101,18 @@ def test_evaluate_with_mock(sample_trace: str, mock_openai_response: str) -> Non
     assert result.failure_modes.ignored_other_agent_input is True
 
 
+def test_evaluate_with_mock_vertex(sample_trace: str, mock_openai_response: str) -> None:
+    """Test evaluate function with mocked Anthropic Vertex call."""
+    with patch("mast.evaluator._call_anthropic_vertex", return_value=mock_openai_response):
+        results = evaluate([sample_trace], model_name="vertex/claude-opus-4-5")
+
+    assert len(results) == 1
+    result = results[0]
+    assert isinstance(result, EvaluationResult)
+    assert result.task_completed is False
+    assert result.failure_modes.ignored_other_agent_input is True
+
+
 @pytest.mark.integration
 def test_evaluate_e2e(sample_trace: str) -> None:
     """
@@ -114,7 +126,31 @@ def test_evaluate_e2e(sample_trace: str) -> None:
     if not os.environ.get("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY not set")
 
-    results = evaluate([sample_trace])
+    results = evaluate([sample_trace], model_name="openai/gpt-5.1")
+
+    assert len(results) == 1
+    result = results[0]
+    assert isinstance(result, EvaluationResult)
+    assert isinstance(result.summary, str)
+    assert len(result.summary) > 0
+    assert isinstance(result.task_completed, bool)
+    assert isinstance(result.failure_modes, FailureModes)
+
+
+@pytest.mark.integration
+def test_evaluate_e2e_vertex(sample_trace: str) -> None:
+    """
+    End-to-end test with real Anthropic Vertex API call.
+
+    Run with: pytest -m integration tests/
+    Requires GOOGLE_CLOUD_PROJECT environment variable and gcloud auth.
+    """
+    import os
+
+    if not os.environ.get("GOOGLE_CLOUD_PROJECT"):
+        pytest.skip("GOOGLE_CLOUD_PROJECT not set")
+
+    results = evaluate([sample_trace], model_name="vertex/claude-opus-4-5")
 
     assert len(results) == 1
     result = results[0]

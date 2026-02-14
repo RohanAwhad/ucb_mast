@@ -1,12 +1,16 @@
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
+from anthropic import AnthropicVertex
 from openai import OpenAI
 
 from .models import EvaluationResult, FailureModes
 
 _TAXONOMY_DIR = Path(__file__).parent.parent / "taxonomy_definitions_examples"
+
+ModelName = Literal["vertex/claude-opus-4-5", "openai/gpt-5.1"]
 
 
 def _load_definitions() -> str:
@@ -155,10 +159,41 @@ def _call_openai(prompt: str, api_key: str | None = None) -> str:
     return ""
 
 
+def _call_anthropic_vertex(
+    prompt: str,
+    project_id: str | None = None,
+    region: str = "us-east5",
+) -> str:
+    """Call Anthropic Claude via Vertex AI with extended thinking."""
+    client = AnthropicVertex(
+        project_id=project_id or os.environ.get("GOOGLE_CLOUD_PROJECT"),
+        region=region,
+    )
+
+    response = client.messages.create(
+        model="claude-opus-4-5@20251101",
+        max_tokens=16000,
+        thinking={
+            "type": "enabled",
+            "budget_tokens": 10000,
+        },
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    # Extract text from response
+    for block in response.content:
+        if block.type == "text":
+            return block.text
+    return ""
+
+
 def evaluate(
     traces: list[str],
     *,
+    model_name: ModelName = "openai/gpt-5.1",
     api_key: str | None = None,
+    project_id: str | None = None,
+    region: str = "us-east5",
     max_trace_length: int = 1048570,
 ) -> list[EvaluationResult]:
     """
@@ -166,7 +201,10 @@ def evaluate(
 
     Args:
         traces: List of trace strings to evaluate
-        api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
+        model_name: Model to use - "openai/gpt-5.1" or "vertex/claude-opus-4-5"
+        api_key: OpenAI API key (for openai model, defaults to OPENAI_API_KEY env var)
+        project_id: Google Cloud project ID (for vertex model, defaults to GOOGLE_CLOUD_PROJECT env var)
+        region: Google Cloud region for Vertex AI (default: us-east5)
         max_trace_length: Maximum trace length before truncation
 
     Returns:
@@ -182,7 +220,14 @@ def evaluate(
             trace = trace[: max_trace_length - len(examples)]
 
         prompt = _build_prompt(trace, definitions, examples)
-        response = _call_openai(prompt, api_key)
+
+        if model_name == "openai/gpt-5.1":
+            response = _call_openai(prompt, api_key)
+        elif model_name == "vertex/claude-opus-4-5":
+            response = _call_anthropic_vertex(prompt, project_id, region)
+        else:
+            raise ValueError(f"Unknown model: {model_name}")
+
         result = _parse_response(response)
         results.append(result)
 
