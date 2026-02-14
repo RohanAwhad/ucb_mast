@@ -188,3 +188,26 @@ def evaluate(
     print("=" * 60)
 
     return summary
+
+
+if __name__ == '__main__':
+    from tau2.agent.llm_agent import LLMAgent
+    
+    def create_agent(tools: list[Tool], policy: str) -> LocalAgent:
+        return LLMAgent(
+            tools=tools,
+            instructions=policy,
+            llm="gpt-4.1-mini",
+            llm_args={"temperature": 0.0},
+        )
+    
+    summary = evaluate(
+        agent_factory=create_agent,
+        domain="airline",
+        num_tasks=50,
+        num_trials=1,
+        max_concurrency=20,
+    )
+    
+    print(f"\nResults: {summary.successful_tasks}/{summary.total_tasks} tasks passed")
+
