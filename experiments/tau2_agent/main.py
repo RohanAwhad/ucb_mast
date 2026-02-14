@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--user-model", default="gpt-4.1-mini", help="User simulator LLM model")
     parser.add_argument("--num-tasks", type=int, default=5, help="Number of tasks to run")
     parser.add_argument("--num-trials", type=int, default=1, help="Number of trials per task")
+    parser.add_argument("--max-concurrency", type=int, default=1, help="Max concurrent task evaluations")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -25,6 +26,7 @@ def main():
     print(f"  Agent Model: {args.model}")
     print(f"  User Model:  {args.user_model}")
     print(f"  Tasks: {args.num_tasks}, Trials: {args.num_trials}")
+    print(f"  Max Concurrency: {args.max_concurrency}")
     print("=" * 60)
 
     # Create agent factory
@@ -43,6 +45,7 @@ def main():
         num_tasks=args.num_tasks,
         num_trials=args.num_trials,
         user_model=args.user_model,
+        max_concurrency=args.max_concurrency,
     )
 
     return summary

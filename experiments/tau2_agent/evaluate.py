@@ -1,4 +1,5 @@
 """Simple evaluation API for custom agents on tau2."""
+import asyncio
 import os
 from pathlib import Path
 from typing import Callable, Optional
@@ -50,6 +51,7 @@ def evaluate(
     user_model: str = "gpt-4.1-mini",
     task_ids: Optional[list[str]] = None,
     max_steps: int = 200,
+    max_concurrency: int = 1,
 ) -> EvaluationSummary:
     """
     Evaluate a custom agent on tau2.
@@ -63,6 +65,7 @@ def evaluate(
         user_model: The LLM to use for the user simulator (default: "gpt-4.1-mini")
         task_ids: Specific task IDs to run (optional)
         max_steps: Maximum steps per task (default: 200)
+        max_concurrency: Maximum concurrent task evaluations (default: 1)
 
     Returns:
         EvaluationSummary with results for each task
@@ -78,72 +81,90 @@ def evaluate(
     else:
         tasks = all_tasks[:num_tasks]
 
+    def run_single_task(task: Task, trial: int) -> EvaluationResult:
+        """Run a single task evaluation (sync)."""
+        print(f"Running task {task.id}, trial {trial + 1}/{num_trials}")
+
+        # Create fresh environment for this task
+        env: Environment = env_factory()
+
+        # Create agent using the factory
+        agent = agent_factory(env.get_tools(), env.get_policy())
+
+        # Get user tools if available
+        user_tools = None
+        try:
+            user_tools = env.get_user_tools()
+        except ValueError:
+            pass
+
+        # Create user simulator
+        user = UserSimulator(
+            tools=user_tools,
+            instructions=str(task.user_scenario),
+            llm=user_model,
+            llm_args={"temperature": 0.0},
+        )
+
+        # Create orchestrator
+        orchestrator = Orchestrator(
+            domain=domain,
+            agent=agent,
+            user=user,
+            environment=env,
+            task=task,
+            max_steps=max_steps,
+            max_errors=10,
+        )
+
+        # Run simulation
+        simulation = orchestrator.run()
+
+        # Evaluate the simulation to get reward
+        reward_info = evaluate_simulation(
+            domain=domain,
+            task=task,
+            simulation=simulation,
+            evaluation_type=EvaluationType.ALL,
+            solo_mode=False,
+        )
+        reward = reward_info.reward if reward_info else 0.0
+
+        # Extract result
+        result = EvaluationResult(
+            task_id=task.id,
+            reward=reward,
+            success=reward == 1.0,
+            num_turns=len(simulation.messages) if simulation.messages else 0,
+            agent_cost=simulation.agent_cost or 0.0,
+            user_cost=simulation.user_cost or 0.0,
+            termination_reason=str(simulation.termination_reason.value) if simulation.termination_reason else "unknown",
+        )
+
+        # Print result
+        status = "PASSED" if result.success else "FAILED"
+        print(f"  Task {task.id}: {status} (reward={result.reward:.2f})")
+        return result
+
+    async def run_with_semaphore(
+        sem: asyncio.Semaphore, task: Task, trial: int
+    ) -> EvaluationResult:
+        """Run task with semaphore-controlled concurrency."""
+        async with sem:
+            return await asyncio.to_thread(run_single_task, task, trial)
+
+    async def run_all_tasks() -> list[EvaluationResult]:
+        """Run all tasks concurrently with semaphore."""
+        sem = asyncio.Semaphore(max_concurrency)
+        coros = [
+            run_with_semaphore(sem, task, trial)
+            for task in tasks
+            for trial in range(num_trials)
+        ]
+        return await asyncio.gather(*coros)
+
     # Run evaluations
-    results = []
-
-    for task in tasks:
-        for trial in range(num_trials):
-            print(f"Running task {task.id}, trial {trial + 1}/{num_trials}")
-
-            # Create fresh environment for this task
-            env: Environment = env_factory()
-
-            # Create agent using the factory
-            agent = agent_factory(env.get_tools(), env.get_policy())
-
-            # Get user tools if available
-            try:
-                user_tools = env.get_user_tools()
-            except ValueError:
-                user_tools = None
-
-            # Create user simulator
-            user = UserSimulator(
-                tools=user_tools,
-                instructions=str(task.user_scenario),
-                llm=user_model,
-                llm_args={"temperature": 0.0},
-            )
-
-            # Create orchestrator
-            orchestrator = Orchestrator(
-                domain=domain,
-                agent=agent,
-                user=user,
-                environment=env,
-                task=task,
-                max_steps=max_steps,
-                max_errors=10,
-            )
-
-            # Run simulation
-            simulation = orchestrator.run()
-
-            # Evaluate the simulation to get reward
-            reward_info = evaluate_simulation(
-                domain=domain,
-                task=task,
-                simulation=simulation,
-                evaluation_type=EvaluationType.ALL,
-                solo_mode=False,
-            )
-            reward = reward_info.reward if reward_info else 0.0
-
-            # Extract result
-            result = EvaluationResult(
-                task_id=task.id,
-                reward=reward,
-                success=reward == 1.0,
-                num_turns=len(simulation.messages) if simulation.messages else 0,
-                agent_cost=simulation.agent_cost or 0.0,
-                user_cost=simulation.user_cost or 0.0,
-                termination_reason=str(simulation.termination_reason.value) if simulation.termination_reason else "unknown",
-            )
-            results.append(result)
-
-            # Print result
-            status = "PASSED" if result.success else "FAILED"
-            print(f"  Task {task.id}: {status} (reward={result.reward:.2f})")
+    results = asyncio.run(run_all_tasks())
 
     # Compute summary
     total_tasks = len(results)
