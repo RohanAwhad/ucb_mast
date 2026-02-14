@@ -13,20 +13,6 @@ SCRIPT_DIR = Path(__file__).parent
 os.chdir(SCRIPT_DIR)
 
 from openevolve import run_evolution
-from evaluate import evaluate
-
-
-def create_evaluator(num_tasks: int, max_concurrency: int, run_mast: bool):
-    """Create an evaluator function with the given parameters."""
-    def evaluator(program_path: str):
-        """Evaluate an evolved agent program."""
-        return evaluate(
-            program_path,
-            num_tasks=num_tasks,
-            max_concurrency=max_concurrency,
-            run_mast=run_mast,
-        )
-    return evaluator
 
 
 def main():
@@ -39,17 +25,14 @@ def main():
     parser.add_argument("--config", type=str, default="config.yaml", help="Config file path")
     args = parser.parse_args()
 
-    # Read initial program
+    # Set environment variables for evaluator_wrapper.py
+    os.environ["TAU2_NUM_TASKS"] = str(args.num_tasks)
+    os.environ["TAU2_MAX_CONCURRENCY"] = str(args.max_concurrency)
+    os.environ["TAU2_RUN_MAST"] = "true" if args.run_mast else "false"
+
+    # Paths
     initial_program_path = SCRIPT_DIR / "initial_agent.py"
-
-    # Create evaluator function
-    evaluator = create_evaluator(
-        num_tasks=args.num_tasks,
-        max_concurrency=args.max_concurrency,
-        run_mast=args.run_mast,
-    )
-
-    # Config file path
+    evaluator_path = SCRIPT_DIR / "evaluator_wrapper.py"
     config_path = SCRIPT_DIR / args.config
 
     print("=" * 60)
@@ -63,10 +46,10 @@ def main():
     print(f"Output directory: {args.output_dir}")
     print("=" * 60)
 
-    # Run evolution
+    # Run evolution (using file-based evaluator for multiprocess compatibility)
     result = run_evolution(
         initial_program=str(initial_program_path),
-        evaluator=evaluator,
+        evaluator=str(evaluator_path),
         config=str(config_path),
         iterations=args.iterations,
         output_dir=args.output_dir,
