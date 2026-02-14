@@ -77,12 +77,17 @@ def _parse_yes_no(text: str, mode: str) -> bool:
     """Parse yes/no for a specific failure mode from response."""
     # Escape the dot in mode number for regex
     mode_escaped = mode.replace(".", r"\.")
-    # Pattern: mode number followed by any text (name) then colon then yes/no
-    # e.g. "2.5 Ignored Other Agent's Input: yes"
-    pattern = rf"{mode_escaped}[^0-9]*?:\s*(yes|no)"
-    match = re.search(pattern, text, re.IGNORECASE)
-    if match:
-        return match.group(1).lower() == "yes"
+    # Try multiple patterns to handle different response formats
+    patterns = [
+        # Format: "1.1 yes" or "1.1  yes" (just number and yes/no)
+        rf"{mode_escaped}\s+(yes|no)",
+        # Format: "1.1 Disobey Task Specification: yes"
+        rf"{mode_escaped}[^0-9\n]*?:\s*(yes|no)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).lower() == "yes"
     return False
 
 
