@@ -136,4 +136,4 @@ class EvaluationResult:
     task_completed: bool  # B: Whether task was successfully completed
     failure_modes: FailureModes  # C: Detected failure modes
     raw_response: str  # Original LLM response for debugging
-    failure_mode_evidence: dict[str, list[str]] = field(default_factory=dict)
+    failure_mode_evidence: dict[str, dict[str, str]] = field(default_factory=dict)

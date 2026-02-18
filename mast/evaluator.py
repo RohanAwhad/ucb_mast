@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from pathlib import Path
@@ -28,6 +29,46 @@ _FAILURE_MODE_CODES = (
     "3.2",
     "3.3",
 )
+_ANTHROPIC_TOOL_NAME = "submit_mast_evaluation"
+_DEFAULT_EVIDENCE_REASON = "Judge cited this transcript ID as evidence."
+_LEGACY_EVIDENCE_REASON = "Evidence cited in plain-text response."
+
+
+def _build_structured_response_schema() -> dict[str, Any]:
+    failure_mode_properties = {
+        code: {
+            "type": "object",
+            "properties": {
+                "present": {"type": "boolean"},
+                "evidence": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+            },
+            "required": ["present", "evidence"],
+            "additionalProperties": False,
+        }
+        for code in _FAILURE_MODE_CODES
+    }
+
+    return {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "task_completed": {"type": "boolean"},
+            "failure_modes": {
+                "type": "object",
+                "properties": failure_mode_properties,
+                "required": list(_FAILURE_MODE_CODES),
+                "additionalProperties": False,
+            },
+        },
+        "required": ["summary", "task_completed", "failure_modes"],
+        "additionalProperties": False,
+    }
+
+
+_STRUCTURED_RESPONSE_SCHEMA = _build_structured_response_schema()
 
 
 def _load_definitions() -> str:
@@ -39,114 +80,38 @@ def _load_examples() -> str:
 
 
 def _build_prompt(trace: str, definitions: str, examples: str) -> str:
-    return f"""Below I will provide a multi-agent system trace.
-Analyze the system behavior and detect failure modes from the taxonomy.
-Only mark a failure mode if you can point to concrete evidence in the trace.
+    return f"""You are evaluating a multi-agent system trace using the MAST taxonomy.
+Return only structured output that matches the provided schema.
 
-Important: transcript lines may include IDs like [m_0004], [tc_0002], [tr_0002].
-When you mark a failure mode as yes, cite the relevant IDs.
+Evaluation rules:
+- Use the 14 failure mode codes exactly: {", ".join(_FAILURE_MODE_CODES)}.
+- Set `present=true` only when you can point to concrete evidence in the trace.
+- Use `evidence` as an object mapping each transcript ID to a short explanation.
+- Transcript IDs look like: m_0007, tc_0002, tr_0002.
+- If a failure mode is not present, set `evidence` to {{}}.
+- `task_completed=true` only if the main user task is completed correctly.
+- Keep `summary` to one sentence.
 
-Return your answer strictly between @@ and @@ with this exact structure:
-@@
-A. <one sentence summary>
-B. <yes or no>
-C.
-1.1 Disobey Task Specification: <yes or no>
-1.2 Disobey Role Specification: <yes or no>
-1.3 Step Repetition: <yes or no>
-1.4 Loss of Conversation History: <yes or no>
-1.5 Unaware of Termination Conditions: <yes or no>
-2.1 Conversation Reset: <yes or no>
-2.2 Fail to Ask for Clarification: <yes or no>
-2.3 Task Derailment: <yes or no>
-2.4 Information Withholding: <yes or no>
-2.5 Ignored Other Agent's Input: <yes or no>
-2.6 Action-Reasoning Mismatch: <yes or no>
-3.1 Premature Termination: <yes or no>
-3.2 No or Incorrect Verification: <yes or no>
-3.3 Weak Verification: <yes or no>
-D.
-1.1 Disobey Task Specification: [<id1>, <id2>]
-1.2 Disobey Role Specification: [<id1>, <id2>]
-1.3 Step Repetition: [<id1>, <id2>]
-1.4 Loss of Conversation History: [<id1>, <id2>]
-1.5 Unaware of Termination Conditions: [<id1>, <id2>]
-2.1 Conversation Reset: [<id1>, <id2>]
-2.2 Fail to Ask for Clarification: [<id1>, <id2>]
-2.3 Task Derailment: [<id1>, <id2>]
-2.4 Information Withholding: [<id1>, <id2>]
-2.5 Ignored Other Agent's Input: [<id1>, <id2>]
-2.6 Action-Reasoning Mismatch: [<id1>, <id2>]
-3.1 Premature Termination: [<id1>, <id2>]
-3.2 No or Incorrect Verification: [<id1>, <id2>]
-3.3 Weak Verification: [<id1>, <id2>]
-@@
-
-Rules for section D:
-- Always provide all 14 lines.
-- Use [] when there is no evidence.
-- IDs must be copied exactly from the trace.
-
-Example answer:
-@@
-A. The task is not completed due to derailment and poor verification.
-B. no
-C.
-1.1 no
-1.2 no
-1.3 no
-1.4 no
-1.5 no
-2.1 no
-2.2 no
-2.3 yes
-2.4 no
-2.5 no
-2.6 yes
-3.1 no
-3.2 yes
-3.3 no
-D.
-1.1: []
-1.2: []
-1.3: []
-1.4: []
-1.5: []
-2.1: []
-2.2: []
-2.3: [m_0011, m_0012]
-2.4: []
-2.5: []
-2.6: [m_0014]
-3.1: []
-3.2: [tr_0003]
-3.3: []
-@@
-
-Here is the trace:
+Trace:
 {trace}
 
-Also, here are the explanations (definitions) of the failure modes and inefficiencies:
+Definitions:
 {definitions}
 
-Here are some examples of the failure modes and inefficiencies:
+Examples:
 {examples}
 """
 
 
 def _parse_yes_no(text: str, mode: str) -> bool:
-    """Parse yes/no for a specific failure mode from response."""
-    # Escape the dot in mode number for regex
+    """Parse yes/no for a specific failure mode from a plain-text response."""
     mode_escaped = mode.replace(".", r"\.")
-    # Try multiple patterns to handle different response formats
     patterns = [
-        # Format: "1.1 yes" or "1.1  yes" (just number and yes/no)
-        rf"{mode_escaped}\s+(yes|no)",
-        # Format: "1.1 Disobey Task Specification: yes"
-        rf"{mode_escaped}[^0-9\n]*?:\s*(yes|no)",
+        rf"^\s*{mode_escaped}\b[^\n]*?:\s*(yes|no)\s*$",
+        rf"^\s*{mode_escaped}\s*[:\-]?\s*(yes|no)\s*$",
     ]
     for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
         if match:
             return match.group(1).lower() == "yes"
     return False
@@ -164,7 +129,11 @@ def _parse_id_list(raw_ids: str) -> list[str]:
     return deduped
 
 
-def _parse_evidence_ids(text: str, mode: str) -> list[str]:
+def _ids_to_evidence_map(ids: list[str], reason: str) -> dict[str, str]:
+    return {item: reason for item in ids}
+
+
+def _parse_evidence_ids(text: str, mode: str) -> dict[str, str]:
     mode_escaped = mode.replace(".", r"\.")
     patterns = [
         rf"^\s*(?:\[\s*{mode_escaped}\s*\]|{mode_escaped})[^\n]*?evidence(?:_ids)?\s*[:=]\s*\[([^\]]*)\]",
@@ -174,30 +143,27 @@ def _parse_evidence_ids(text: str, mode: str) -> list[str]:
     for pattern in patterns:
         matches = list(re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE))
         for match in reversed(matches):
-            parsed = _parse_id_list(match.group(1).strip())
-            return parsed
-    return []
+            ids = _parse_id_list(match.group(1).strip())
+            return _ids_to_evidence_map(ids, _LEGACY_EVIDENCE_REASON)
+    return {}
 
 
 def _parse_response(response: str) -> EvaluationResult:
-    """Parse the LLM response into an EvaluationResult."""
+    """Legacy parser for plain-text model output."""
     cleaned = response.strip()
     if cleaned.startswith("@@"):
         cleaned = cleaned[2:]
     if cleaned.endswith("@@"):
         cleaned = cleaned[:-2]
 
-    # Parse A: summary
     summary_match = re.search(
         r"A\.\s*(.+?)(?=B\.|$)", cleaned, re.DOTALL | re.IGNORECASE
     )
     summary = summary_match.group(1).strip() if summary_match else ""
 
-    # Parse B: task completed
     task_match = re.search(r"B\.[^\n]*?(yes|no)\b", cleaned, re.IGNORECASE)
     task_completed = task_match.group(1).lower() == "yes" if task_match else False
 
-    # Parse C: failure modes
     failure_modes = FailureModes(
         disobey_task_specification=_parse_yes_no(cleaned, "1.1"),
         disobey_role_specification=_parse_yes_no(cleaned, "1.2"),
@@ -215,7 +181,7 @@ def _parse_response(response: str) -> EvaluationResult:
         weak_verification=_parse_yes_no(cleaned, "3.3"),
     )
 
-    failure_mode_evidence = {
+    failure_mode_evidence: dict[str, dict[str, str]] = {
         code: _parse_evidence_ids(cleaned, code) for code in _FAILURE_MODE_CODES
     }
 
@@ -228,41 +194,135 @@ def _parse_response(response: str) -> EvaluationResult:
     )
 
 
-def _call_openai(prompt: str, api_key: str | None = None) -> str:
-    """Call OpenAI API with GPT-5.2 and thinking medium."""
+def _normalize_evidence_map(raw_evidence: Any) -> dict[str, str]:
+    if isinstance(raw_evidence, dict):
+        cleaned_map: dict[str, str] = {}
+        for raw_id, raw_reason in raw_evidence.items():
+            evidence_id = str(raw_id).strip()
+            if not evidence_id:
+                continue
+            if evidence_id.lower() in {"none", "null", "n/a"}:
+                continue
+
+            reason = str(raw_reason).strip() if raw_reason is not None else ""
+            cleaned_map[evidence_id] = reason or _DEFAULT_EVIDENCE_REASON
+        return cleaned_map
+
+    if isinstance(raw_evidence, list):
+        cleaned_ids: list[str] = []
+        for item in raw_evidence:
+            item_str = item if isinstance(item, str) else str(item)
+            normalized = item_str.strip()
+            if not normalized:
+                continue
+            if normalized.lower() in {"none", "null", "n/a"}:
+                continue
+            if normalized not in cleaned_ids:
+                cleaned_ids.append(normalized)
+        return _ids_to_evidence_map(cleaned_ids, _DEFAULT_EVIDENCE_REASON)
+
+    return {}
+
+
+def _parse_structured_response(
+    payload: dict[str, Any],
+    raw_response: str,
+) -> EvaluationResult:
+    summary_raw = payload.get("summary", "")
+    summary = summary_raw if isinstance(summary_raw, str) else str(summary_raw)
+
+    task_completed_raw = payload.get("task_completed", False)
+    task_completed = (
+        task_completed_raw
+        if isinstance(task_completed_raw, bool)
+        else bool(task_completed_raw)
+    )
+
+    failure_modes_payload = payload.get("failure_modes")
+    if not isinstance(failure_modes_payload, dict):
+        raise ValueError("Structured response missing failure_modes object")
+
+    mode_presence: dict[str, bool] = {}
+    mode_evidence: dict[str, dict[str, str]] = {}
+
+    for code in _FAILURE_MODE_CODES:
+        mode_payload = failure_modes_payload.get(code)
+        if not isinstance(mode_payload, dict):
+            raise ValueError(f"Structured response missing mode payload for {code}")
+
+        present_raw = mode_payload.get("present", False)
+        present = present_raw if isinstance(present_raw, bool) else bool(present_raw)
+        evidence_map = _normalize_evidence_map(
+            mode_payload.get("evidence", mode_payload.get("evidence_ids", []))
+        )
+        mode_presence[code] = present
+        mode_evidence[code] = evidence_map if present else {}
+
+    failure_modes = FailureModes(
+        disobey_task_specification=mode_presence["1.1"],
+        disobey_role_specification=mode_presence["1.2"],
+        step_repetition=mode_presence["1.3"],
+        loss_of_conversation_history=mode_presence["1.4"],
+        unaware_of_termination_conditions=mode_presence["1.5"],
+        conversation_reset=mode_presence["2.1"],
+        fail_to_ask_for_clarification=mode_presence["2.2"],
+        task_derailment=mode_presence["2.3"],
+        information_withholding=mode_presence["2.4"],
+        ignored_other_agent_input=mode_presence["2.5"],
+        action_reasoning_mismatch=mode_presence["2.6"],
+        premature_termination=mode_presence["3.1"],
+        no_or_incorrect_verification=mode_presence["3.2"],
+        weak_verification=mode_presence["3.3"],
+    )
+
+    return EvaluationResult(
+        summary=summary.strip(),
+        task_completed=task_completed,
+        failure_modes=failure_modes,
+        raw_response=raw_response,
+        failure_mode_evidence=mode_evidence,
+    )
+
+
+def _call_openai(
+    prompt: str,
+    api_key: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Call OpenAI API with structured JSON schema output."""
     client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
 
     response = client.responses.create(
         model="gpt-5.2",
         input=prompt,
         reasoning={"effort": "high"},
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "mast_evaluation",
+                "schema": _STRUCTURED_RESPONSE_SCHEMA,
+                "strict": True,
+            }
+        },
     )
 
     response_any: Any = response
-
     output_text = getattr(response_any, "output_text", None)
-    if isinstance(output_text, str):
-        return output_text
+    if not isinstance(output_text, str) or not output_text.strip():
+        raise ValueError("OpenAI response missing structured output text")
 
-    output_blocks: Any = getattr(response_any, "output", None)
-    if isinstance(output_blocks, list):
-        for block in output_blocks:
-            content_items = getattr(block, "content", None)
-            if not isinstance(content_items, list):
-                continue
-            for content_item in content_items:
-                text_value = getattr(content_item, "text", None)
-                if isinstance(text_value, str):
-                    return text_value
-    return ""
+    payload = json.loads(output_text)
+    if not isinstance(payload, dict):
+        raise ValueError("OpenAI structured output is not a JSON object")
+
+    return payload, output_text
 
 
 def _call_anthropic_vertex(
     prompt: str,
     project_id: str | None = None,
     region: str = "us-east5",
-) -> str:
-    """Call Anthropic Claude via Vertex AI with extended thinking."""
+) -> tuple[dict[str, Any], str]:
+    """Call Anthropic Claude via Vertex AI with a forced tool schema."""
     resolved_project_id = project_id or os.environ.get("GOOGLE_CLOUD_PROJECT")
     if resolved_project_id is None:
         raise ValueError("GOOGLE_CLOUD_PROJECT must be set for vertex model")
@@ -275,18 +335,32 @@ def _call_anthropic_vertex(
     response = client.messages.create(
         model="claude-opus-4-6@default",
         max_tokens=16000,
-        thinking={
-            "type": "enabled",
-            "budget_tokens": 10000,
-        },
         messages=[{"role": "user", "content": prompt}],
+        tools=[
+            {
+                "name": _ANTHROPIC_TOOL_NAME,
+                "description": "Submit MAST evaluation in structured JSON format.",
+                "input_schema": _STRUCTURED_RESPONSE_SCHEMA,
+            }
+        ],
+        tool_choice={"type": "tool", "name": _ANTHROPIC_TOOL_NAME},
     )
 
-    # Extract text from response
-    for block in response.content:
-        if block.type == "text":
-            return block.text
-    return ""
+    response_any: Any = response
+    content_blocks = getattr(response_any, "content", None)
+    if not isinstance(content_blocks, list):
+        raise ValueError("Anthropic response missing content blocks")
+
+    for block in content_blocks:
+        if getattr(block, "type", None) != "tool_use":
+            continue
+        if getattr(block, "name", None) != _ANTHROPIC_TOOL_NAME:
+            continue
+        tool_input = getattr(block, "input", None)
+        if isinstance(tool_input, dict):
+            return tool_input, json.dumps(tool_input)
+
+    raise ValueError("Anthropic response missing structured tool output")
 
 
 def evaluate(
@@ -315,22 +389,24 @@ def evaluate(
     definitions = _load_definitions()
     examples = _load_examples()
 
-    results = []
+    results: list[EvaluationResult] = []
     for trace in traces:
-        # Truncate if needed
         if len(trace) + len(examples) > max_trace_length:
             trace = trace[: max_trace_length - len(examples)]
 
         prompt = _build_prompt(trace, definitions, examples)
 
         if model_name == "openai/gpt-5.2":
-            response = _call_openai(prompt, api_key)
+            structured_payload, raw_response = _call_openai(prompt, api_key)
         elif model_name == "vertex/claude-opus-4-6":
-            response = _call_anthropic_vertex(prompt, project_id, region)
+            structured_payload, raw_response = _call_anthropic_vertex(
+                prompt,
+                project_id,
+                region,
+            )
         else:
             raise ValueError(f"Unknown model: {model_name}")
 
-        result = _parse_response(response)
-        results.append(result)
+        results.append(_parse_structured_response(structured_payload, raw_response))
 
     return results

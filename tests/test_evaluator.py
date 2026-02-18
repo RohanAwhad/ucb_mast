@@ -61,6 +61,62 @@ D.
 @@"""
 
 
+@pytest.fixture
+def mock_structured_payload() -> dict[str, object]:
+    """Mock structured output for schema-based model calls."""
+    codes = [
+        "1.1",
+        "1.2",
+        "1.3",
+        "1.4",
+        "1.5",
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "2.6",
+        "3.1",
+        "3.2",
+        "3.3",
+    ]
+    modes: dict[str, dict[str, object]] = {
+        code: {"present": False, "evidence": {}} for code in codes
+    }
+    modes["1.3"] = {
+        "present": True,
+        "evidence": {
+            "m_0007": "Agent repeats an already completed step.",
+            "m_0010": "Repeated follow-up with no new progress.",
+        },
+    }
+    modes["1.5"] = {
+        "present": True,
+        "evidence": {
+            "m_0010": "Agent continues despite missing stopping condition.",
+            "m_0012": "Conversation should have terminated earlier.",
+        },
+    }
+    modes["2.5"] = {
+        "present": True,
+        "evidence": {
+            "m_0008": "Agent ignores the counterpart's clarification.",
+        },
+    }
+    modes["3.2"] = {
+        "present": True,
+        "evidence": {
+            "m_0017": "Agent claims verification without checking timestamps.",
+            "tr_0007": "Tool output contradicts verification claim.",
+        },
+    }
+    return {
+        "summary": "The task failed due to repeated ignored clarifications.",
+        "task_completed": False,
+        "failure_modes": modes,
+    }
+
+
 def test_parse_response(mock_openai_response: str) -> None:
     """Test that response parsing works correctly."""
     from mast.evaluator import _parse_response
@@ -80,9 +136,9 @@ def test_parse_response(mock_openai_response: str) -> None:
     assert result.failure_modes.ignored_other_agent_input is True
     assert result.failure_modes.disobey_task_specification is False
     assert result.failure_modes.task_derailment is False
-    assert result.failure_mode_evidence["1.3"] == ["m_0007", "m_0010"]
-    assert result.failure_mode_evidence["1.5"] == ["m_0010", "m_0012"]
-    assert result.failure_mode_evidence["2.5"] == ["m_0008"]
+    assert sorted(result.failure_mode_evidence["1.3"].keys()) == ["m_0007", "m_0010"]
+    assert sorted(result.failure_mode_evidence["1.5"].keys()) == ["m_0010", "m_0012"]
+    assert sorted(result.failure_mode_evidence["2.5"].keys()) == ["m_0008"]
 
 
 def test_parse_response_bracketed_mode_evidence() -> None:
@@ -94,13 +150,17 @@ A. Action-reasoning mismatch was observed.
 B. yes
 C.
 2.6 Action-Reasoning Mismatch: yes
+3.2 No or Incorrect Verification: yes
 D.
 [2.6] Action-Reasoning Mismatch: [abc, def, xyz]
+[3.2] No or Incorrect Verification: [m_0021, tr_0007]
 @@"""
 
     result = _parse_response(response)
     assert result.failure_modes.action_reasoning_mismatch is True
-    assert result.failure_mode_evidence["2.6"] == ["abc", "def", "xyz"]
+    assert result.failure_modes.no_or_incorrect_verification is True
+    assert sorted(result.failure_mode_evidence["2.6"].keys()) == ["abc", "def", "xyz"]
+    assert sorted(result.failure_mode_evidence["3.2"].keys()) == ["m_0021", "tr_0007"]
 
 
 def test_failure_modes_to_dict() -> None:
@@ -129,24 +189,37 @@ def test_failure_modes_to_dict() -> None:
     assert len(d) == 14
 
 
-def test_evaluate_with_mock(sample_trace: str, mock_openai_response: str) -> None:
+def test_evaluate_with_mock(
+    sample_trace: str,
+    mock_structured_payload: dict[str, object],
+) -> None:
     """Test evaluate function with mocked OpenAI call."""
-    with patch("mast.evaluator._call_openai", return_value=mock_openai_response):
+    raw_payload = json.dumps(mock_structured_payload)
+    with patch(
+        "mast.evaluator._call_openai",
+        return_value=(mock_structured_payload, raw_payload),
+    ):
         results = evaluate([sample_trace])
 
     assert len(results) == 1
     result = results[0]
     assert isinstance(result, EvaluationResult)
     assert result.task_completed is False
+    assert result.failure_modes.step_repetition is True
     assert result.failure_modes.ignored_other_agent_input is True
+    assert result.failure_modes.no_or_incorrect_verification is True
+    assert sorted(result.failure_mode_evidence["3.2"].keys()) == ["m_0017", "tr_0007"]
 
 
 def test_evaluate_with_mock_vertex(
-    sample_trace: str, mock_openai_response: str
+    sample_trace: str,
+    mock_structured_payload: dict[str, object],
 ) -> None:
     """Test evaluate function with mocked Anthropic Vertex call."""
+    raw_payload = json.dumps(mock_structured_payload)
     with patch(
-        "mast.evaluator._call_anthropic_vertex", return_value=mock_openai_response
+        "mast.evaluator._call_anthropic_vertex",
+        return_value=(mock_structured_payload, raw_payload),
     ):
         results = evaluate([sample_trace], model_name="vertex/claude-opus-4-6")
 
@@ -155,6 +228,7 @@ def test_evaluate_with_mock_vertex(
     assert isinstance(result, EvaluationResult)
     assert result.task_completed is False
     assert result.failure_modes.ignored_other_agent_input is True
+    assert result.failure_modes.no_or_incorrect_verification is True
 
 
 @pytest.mark.integration
@@ -170,7 +244,7 @@ def test_evaluate_e2e(sample_trace: str) -> None:
     if not os.environ.get("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY not set")
 
-    results = evaluate([sample_trace], model_name="openai/gpt-5.1")
+    results = evaluate([sample_trace], model_name="openai/gpt-5.2")
 
     assert len(results) == 1
     result = results[0]

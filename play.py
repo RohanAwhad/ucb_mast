@@ -73,9 +73,16 @@ def format_result(result: EvaluationResult) -> str:
         lines.append("None")
     else:
         for fm in detected:
-            evidence_ids = result.failure_mode_evidence.get(fm["code"], [])
-            evidence_text = ", ".join(evidence_ids)
-            lines.append(f"[{fm['code']}] {fm['name']}: [{evidence_text}]")
+            evidence_map = result.failure_mode_evidence.get(fm["code"], {})
+            if evidence_map:
+                evidence_parts = [
+                    f"{evidence_id}: {reason}"
+                    for evidence_id, reason in evidence_map.items()
+                ]
+                evidence_text = "; ".join(evidence_parts)
+            else:
+                evidence_text = ""
+            lines.append(f"[{fm['code']}] {fm['name']}: {{{evidence_text}}}")
             lines.append(f"  {fm['definition']}")
     lines.append("")
     lines.append("--- Raw Model Response ---")
