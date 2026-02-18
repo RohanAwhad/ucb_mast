@@ -42,6 +42,22 @@ C.
 3.1 Premature Termination: no
 3.2 No or Incorrect Verification: no
 3.3 Weak Verification: no
+
+D.
+1.1 Disobey Task Specification: []
+1.2 Disobey Role Specification: []
+1.3 Step Repetition: [m_0007, m_0010]
+1.4 Loss of Conversation History: []
+1.5 Unaware of Termination Conditions: [m_0010, m_0012]
+2.1 Conversation Reset: []
+2.2 Fail to Ask for Clarification: []
+2.3 Task Derailment: []
+2.4 Information Withholding: []
+2.5 Ignored Other Agent's Input: [m_0008]
+2.6 Action-Reasoning Mismatch: []
+3.1 Premature Termination: []
+3.2 No or Incorrect Verification: []
+3.3 Weak Verification: []
 @@"""
 
 
@@ -53,7 +69,10 @@ def test_parse_response(mock_openai_response: str) -> None:
 
     assert isinstance(result, EvaluationResult)
     assert result.task_completed is False
-    assert "mathproxyagent" in result.summary.lower() or "ignored" in result.summary.lower()
+    assert (
+        "mathproxyagent" in result.summary.lower()
+        or "ignored" in result.summary.lower()
+    )
 
     # Check specific failure modes
     assert result.failure_modes.step_repetition is True
@@ -61,6 +80,27 @@ def test_parse_response(mock_openai_response: str) -> None:
     assert result.failure_modes.ignored_other_agent_input is True
     assert result.failure_modes.disobey_task_specification is False
     assert result.failure_modes.task_derailment is False
+    assert result.failure_mode_evidence["1.3"] == ["m_0007", "m_0010"]
+    assert result.failure_mode_evidence["1.5"] == ["m_0010", "m_0012"]
+    assert result.failure_mode_evidence["2.5"] == ["m_0008"]
+
+
+def test_parse_response_bracketed_mode_evidence() -> None:
+    """Support bracketed mode format like [2.6] ...: [id1, id2]."""
+    from mast.evaluator import _parse_response
+
+    response = """@@
+A. Action-reasoning mismatch was observed.
+B. yes
+C.
+2.6 Action-Reasoning Mismatch: yes
+D.
+[2.6] Action-Reasoning Mismatch: [abc, def, xyz]
+@@"""
+
+    result = _parse_response(response)
+    assert result.failure_modes.action_reasoning_mismatch is True
+    assert result.failure_mode_evidence["2.6"] == ["abc", "def", "xyz"]
 
 
 def test_failure_modes_to_dict() -> None:
@@ -101,10 +141,14 @@ def test_evaluate_with_mock(sample_trace: str, mock_openai_response: str) -> Non
     assert result.failure_modes.ignored_other_agent_input is True
 
 
-def test_evaluate_with_mock_vertex(sample_trace: str, mock_openai_response: str) -> None:
+def test_evaluate_with_mock_vertex(
+    sample_trace: str, mock_openai_response: str
+) -> None:
     """Test evaluate function with mocked Anthropic Vertex call."""
-    with patch("mast.evaluator._call_anthropic_vertex", return_value=mock_openai_response):
-        results = evaluate([sample_trace], model_name="vertex/claude-opus-4-5")
+    with patch(
+        "mast.evaluator._call_anthropic_vertex", return_value=mock_openai_response
+    ):
+        results = evaluate([sample_trace], model_name="vertex/claude-opus-4-6")
 
     assert len(results) == 1
     result = results[0]
@@ -150,7 +194,7 @@ def test_evaluate_e2e_vertex(sample_trace: str) -> None:
     if not os.environ.get("GOOGLE_CLOUD_PROJECT"):
         pytest.skip("GOOGLE_CLOUD_PROJECT not set")
 
-    results = evaluate([sample_trace], model_name="vertex/claude-opus-4-5")
+    results = evaluate([sample_trace], model_name="vertex/claude-opus-4-6")
 
     assert len(results) == 1
     result = results[0]

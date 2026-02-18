@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "anthropic[vertex]>=0.79.0",
     "openai>=2.21.0",
+    "tqdm>=4.67.1",
 ]
 
 [dependency-groups]

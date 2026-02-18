@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 # Short definitions for each failure mode (from MAST taxonomy)
@@ -100,11 +100,13 @@ class FailureModes:
         for code, is_detected in self.to_dict().items():
             if is_detected:
                 info = FAILURE_MODE_DEFINITIONS[code]
-                detected.append({
-                    "code": code,
-                    "name": info["name"],
-                    "definition": info["definition"],
-                })
+                detected.append(
+                    {
+                        "code": code,
+                        "name": info["name"],
+                        "definition": info["definition"],
+                    }
+                )
         return detected
 
     def to_dict(self) -> dict[str, bool]:
@@ -134,3 +136,4 @@ class EvaluationResult:
     task_completed: bool  # B: Whether task was successfully completed
     failure_modes: FailureModes  # C: Detected failure modes
     raw_response: str  # Original LLM response for debugging
+    failure_mode_evidence: dict[str, list[str]] = field(default_factory=dict)

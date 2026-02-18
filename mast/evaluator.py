@@ -1,7 +1,7 @@
 import os
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 from anthropic import AnthropicVertex
 from openai import OpenAI
@@ -10,7 +10,24 @@ from .models import EvaluationResult, FailureModes
 
 _TAXONOMY_DIR = Path(__file__).parent.parent / "taxonomy_definitions_examples"
 
-ModelName = Literal["vertex/claude-opus-4-5", "openai/gpt-5.1"]
+ModelName = Literal["vertex/claude-opus-4-6", "openai/gpt-5.2"]
+
+_FAILURE_MODE_CODES = (
+    "1.1",
+    "1.2",
+    "1.3",
+    "1.4",
+    "1.5",
+    "2.1",
+    "2.2",
+    "2.3",
+    "2.4",
+    "2.5",
+    "2.6",
+    "3.1",
+    "3.2",
+    "3.3",
+)
 
 
 def _load_definitions() -> str:
@@ -22,59 +39,99 @@ def _load_examples() -> str:
 
 
 def _build_prompt(trace: str, definitions: str, examples: str) -> str:
-    return (
-        "Below I will provide a multiagent system trace. provide me an analysis of the failure modes and inefficiencies as I will say below. \n"
-        "In the traces, analyze the system behaviour."
-        "There are several failure modes in multiagent systems I identified. I will provide them below. Tell me if you encounter any of them, as a binary yes or no. \n"
-        "Also, give me a one sentence (be brief) summary of the problems with the inefficiencies or failure modes in the trace. Only mark a failure mode if you can provide an example of it in the trace, and specify that in your summary at the end"
-        "Also tell me whether the task is successfully completed or not, as a binary yes or no."
-        "At the very end, I provide you with the definitions of the failure modes and inefficiencies. After the definitions, I will provide you with examples of the failure modes and inefficiencies for you to understand them better."
-        "Tell me if you encounter any of them between the @@ symbols as I will say below, as a binary yes or no."
-        "Here are the things you should answer. Start after the @@ sign and end before the next @@ sign (do not include the @@ symbols in your answer):"
-        "*** begin of things you should answer *** @@"
-        "A. Freeform text summary of the problems with the inefficiencies or failure modes in the trace: <summary>"
-        "B. Whether the task is successfully completed or not: <yes or no>"
-        "C. Whether you encounter any of the failure modes or inefficiencies:"
-        "1.1 Disobey Task Specification: <yes or no>"
-        "1.2 Disobey Role Specification: <yes or no>"
-        "1.3 Step Repetition: <yes or no>"
-        "1.4 Loss of Conversation History: <yes or no>"
-        "1.5 Unaware of Termination Conditions: <yes or no>"
-        "2.1 Conversation Reset: <yes or no>"
-        "2.2 Fail to Ask for Clarification: <yes or no>"
-        "2.3 Task Derailment: <yes or no>"
-        "2.4 Information Withholding: <yes or no>"
-        "2.5 Ignored Other Agent's Input: <yes or no>"
-        "2.6 Action-Reasoning Mismatch: <yes or no>"
-        "3.1 Premature Termination: <yes or no>"
-        "3.2 No or Incorrect Verification: <yes or no>"
-        "3.3 Weak Verification: <yes or no>"
-        "@@*** end of your answer ***"
-        "An example answer is: \n"
-        "A. The task is not completed due to disobeying role specification as agents went rogue and started to chat with each other instead of completing the task. Agents derailed and verifier is not strong enough to detect it.\n"
-        "B. no \n"
-        "C. \n"
-        "1.1 no \n"
-        "1.2 no \n"
-        "1.3 no \n"
-        "1.4 no \n"
-        "1.5 no \n"
-        "2.1 no \n"
-        "2.2 no \n"
-        "2.3 yes \n"
-        "2.4 no \n"
-        "2.5 no \n"
-        "2.6 yes \n"
-        "3.1 no \n"
-        "3.2 yes \n"
-        "3.3 no \n"
-        "Here is the trace: \n"
-        f"{trace}"
-        "Also, here are the explanations (definitions) of the failure modes and inefficiencies: \n"
-        f"{definitions} \n"
-        "Here are some examples of the failure modes and inefficiencies: \n"
-        f"{examples}"
-    )
+    return f"""Below I will provide a multi-agent system trace.
+Analyze the system behavior and detect failure modes from the taxonomy.
+Only mark a failure mode if you can point to concrete evidence in the trace.
+
+Important: transcript lines may include IDs like [m_0004], [tc_0002], [tr_0002].
+When you mark a failure mode as yes, cite the relevant IDs.
+
+Return your answer strictly between @@ and @@ with this exact structure:
+@@
+A. <one sentence summary>
+B. <yes or no>
+C.
+1.1 Disobey Task Specification: <yes or no>
+1.2 Disobey Role Specification: <yes or no>
+1.3 Step Repetition: <yes or no>
+1.4 Loss of Conversation History: <yes or no>
+1.5 Unaware of Termination Conditions: <yes or no>
+2.1 Conversation Reset: <yes or no>
+2.2 Fail to Ask for Clarification: <yes or no>
+2.3 Task Derailment: <yes or no>
+2.4 Information Withholding: <yes or no>
+2.5 Ignored Other Agent's Input: <yes or no>
+2.6 Action-Reasoning Mismatch: <yes or no>
+3.1 Premature Termination: <yes or no>
+3.2 No or Incorrect Verification: <yes or no>
+3.3 Weak Verification: <yes or no>
+D.
+1.1 Disobey Task Specification: [<id1>, <id2>]
+1.2 Disobey Role Specification: [<id1>, <id2>]
+1.3 Step Repetition: [<id1>, <id2>]
+1.4 Loss of Conversation History: [<id1>, <id2>]
+1.5 Unaware of Termination Conditions: [<id1>, <id2>]
+2.1 Conversation Reset: [<id1>, <id2>]
+2.2 Fail to Ask for Clarification: [<id1>, <id2>]
+2.3 Task Derailment: [<id1>, <id2>]
+2.4 Information Withholding: [<id1>, <id2>]
+2.5 Ignored Other Agent's Input: [<id1>, <id2>]
+2.6 Action-Reasoning Mismatch: [<id1>, <id2>]
+3.1 Premature Termination: [<id1>, <id2>]
+3.2 No or Incorrect Verification: [<id1>, <id2>]
+3.3 Weak Verification: [<id1>, <id2>]
+@@
+
+Rules for section D:
+- Always provide all 14 lines.
+- Use [] when there is no evidence.
+- IDs must be copied exactly from the trace.
+
+Example answer:
+@@
+A. The task is not completed due to derailment and poor verification.
+B. no
+C.
+1.1 no
+1.2 no
+1.3 no
+1.4 no
+1.5 no
+2.1 no
+2.2 no
+2.3 yes
+2.4 no
+2.5 no
+2.6 yes
+3.1 no
+3.2 yes
+3.3 no
+D.
+1.1: []
+1.2: []
+1.3: []
+1.4: []
+1.5: []
+2.1: []
+2.2: []
+2.3: [m_0011, m_0012]
+2.4: []
+2.5: []
+2.6: [m_0014]
+3.1: []
+3.2: [tr_0003]
+3.3: []
+@@
+
+Here is the trace:
+{trace}
+
+Also, here are the explanations (definitions) of the failure modes and inefficiencies:
+{definitions}
+
+Here are some examples of the failure modes and inefficiencies:
+{examples}
+"""
 
 
 def _parse_yes_no(text: str, mode: str) -> bool:
@@ -95,6 +152,33 @@ def _parse_yes_no(text: str, mode: str) -> bool:
     return False
 
 
+def _parse_id_list(raw_ids: str) -> list[str]:
+    parts = [part.strip().strip("'\"`") for part in raw_ids.split(",")]
+    filtered = [
+        part for part in parts if part and part.lower() not in {"none", "null", "n/a"}
+    ]
+    deduped: list[str] = []
+    for item in filtered:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
+def _parse_evidence_ids(text: str, mode: str) -> list[str]:
+    mode_escaped = mode.replace(".", r"\.")
+    patterns = [
+        rf"^\s*(?:\[\s*{mode_escaped}\s*\]|{mode_escaped})[^\n]*?evidence(?:_ids)?\s*[:=]\s*\[([^\]]*)\]",
+        rf"^\s*(?:\[\s*{mode_escaped}\s*\]|{mode_escaped})[^\n]*?:?\s*\[([^\]]*)\]",
+    ]
+
+    for pattern in patterns:
+        matches = list(re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE))
+        for match in reversed(matches):
+            parsed = _parse_id_list(match.group(1).strip())
+            return parsed
+    return []
+
+
 def _parse_response(response: str) -> EvaluationResult:
     """Parse the LLM response into an EvaluationResult."""
     cleaned = response.strip()
@@ -104,11 +188,13 @@ def _parse_response(response: str) -> EvaluationResult:
         cleaned = cleaned[:-2]
 
     # Parse A: summary
-    summary_match = re.search(r"A\.\s*(.+?)(?=B\.|$)", cleaned, re.DOTALL | re.IGNORECASE)
+    summary_match = re.search(
+        r"A\.\s*(.+?)(?=B\.|$)", cleaned, re.DOTALL | re.IGNORECASE
+    )
     summary = summary_match.group(1).strip() if summary_match else ""
 
     # Parse B: task completed
-    task_match = re.search(r"B\.\s*(yes|no)", cleaned, re.IGNORECASE)
+    task_match = re.search(r"B\.[^\n]*?(yes|no)\b", cleaned, re.IGNORECASE)
     task_completed = task_match.group(1).lower() == "yes" if task_match else False
 
     # Parse C: failure modes
@@ -129,33 +215,45 @@ def _parse_response(response: str) -> EvaluationResult:
         weak_verification=_parse_yes_no(cleaned, "3.3"),
     )
 
+    failure_mode_evidence = {
+        code: _parse_evidence_ids(cleaned, code) for code in _FAILURE_MODE_CODES
+    }
+
     return EvaluationResult(
         summary=summary,
         task_completed=task_completed,
         failure_modes=failure_modes,
         raw_response=response,
+        failure_mode_evidence=failure_mode_evidence,
     )
 
 
 def _call_openai(prompt: str, api_key: str | None = None) -> str:
-    """Call OpenAI API with GPT-5.1 and thinking medium."""
+    """Call OpenAI API with GPT-5.2 and thinking medium."""
     client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
 
     response = client.responses.create(
-        model="gpt-5.1",
+        model="gpt-5.2",
         input=prompt,
-        reasoning={"effort": "medium"},
+        reasoning={"effort": "high"},
     )
-    # Extract text from response - handle both possible response structures
-    if hasattr(response, "output_text"):
-        return response.output_text
-    elif hasattr(response, "output") and len(response.output) > 0:
-        # New API structure returns output as list of content blocks
-        for block in response.output:
-            if hasattr(block, "content") and len(block.content) > 0:
-                for content in block.content:
-                    if hasattr(content, "text"):
-                        return content.text
+
+    response_any: Any = response
+
+    output_text = getattr(response_any, "output_text", None)
+    if isinstance(output_text, str):
+        return output_text
+
+    output_blocks: Any = getattr(response_any, "output", None)
+    if isinstance(output_blocks, list):
+        for block in output_blocks:
+            content_items = getattr(block, "content", None)
+            if not isinstance(content_items, list):
+                continue
+            for content_item in content_items:
+                text_value = getattr(content_item, "text", None)
+                if isinstance(text_value, str):
+                    return text_value
     return ""
 
 
@@ -165,13 +263,17 @@ def _call_anthropic_vertex(
     region: str = "us-east5",
 ) -> str:
     """Call Anthropic Claude via Vertex AI with extended thinking."""
+    resolved_project_id = project_id or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if resolved_project_id is None:
+        raise ValueError("GOOGLE_CLOUD_PROJECT must be set for vertex model")
+
     client = AnthropicVertex(
-        project_id=project_id or os.environ.get("GOOGLE_CLOUD_PROJECT"),
+        project_id=cast(str, resolved_project_id),
         region=region,
     )
 
     response = client.messages.create(
-        model="claude-opus-4-5@20251101",
+        model="claude-opus-4-6@default",
         max_tokens=16000,
         thinking={
             "type": "enabled",
@@ -190,7 +292,7 @@ def _call_anthropic_vertex(
 def evaluate(
     traces: list[str],
     *,
-    model_name: ModelName = "openai/gpt-5.1",
+    model_name: ModelName = "openai/gpt-5.2",
     api_key: str | None = None,
     project_id: str | None = None,
     region: str = "us-east5",
@@ -201,7 +303,7 @@ def evaluate(
 
     Args:
         traces: List of trace strings to evaluate
-        model_name: Model to use - "openai/gpt-5.1" or "vertex/claude-opus-4-5"
+        model_name: Model to use - "openai/gpt-5.2" or "vertex/claude-opus-4-6"
         api_key: OpenAI API key (for openai model, defaults to OPENAI_API_KEY env var)
         project_id: Google Cloud project ID (for vertex model, defaults to GOOGLE_CLOUD_PROJECT env var)
         region: Google Cloud region for Vertex AI (default: us-east5)
@@ -221,9 +323,9 @@ def evaluate(
 
         prompt = _build_prompt(trace, definitions, examples)
 
-        if model_name == "openai/gpt-5.1":
+        if model_name == "openai/gpt-5.2":
             response = _call_openai(prompt, api_key)
-        elif model_name == "vertex/claude-opus-4-5":
+        elif model_name == "vertex/claude-opus-4-6":
             response = _call_anthropic_vertex(prompt, project_id, region)
         else:
             raise ValueError(f"Unknown model: {model_name}")
