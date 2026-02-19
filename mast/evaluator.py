@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -29,9 +28,24 @@ _FAILURE_MODE_CODES = (
     "3.2",
     "3.3",
 )
+_FAILURE_MODE_FIELD_MAP = {
+    "1.1": "disobey_task_specification",
+    "1.2": "disobey_role_specification",
+    "1.3": "step_repetition",
+    "1.4": "loss_of_conversation_history",
+    "1.5": "unaware_of_termination_conditions",
+    "2.1": "conversation_reset",
+    "2.2": "fail_to_ask_for_clarification",
+    "2.3": "task_derailment",
+    "2.4": "information_withholding",
+    "2.5": "ignored_other_agent_input",
+    "2.6": "action_reasoning_mismatch",
+    "3.1": "premature_termination",
+    "3.2": "no_or_incorrect_verification",
+    "3.3": "weak_verification",
+}
 _ANTHROPIC_TOOL_NAME = "submit_mast_evaluation"
 _DEFAULT_EVIDENCE_REASON = "Judge cited this transcript ID as evidence."
-_LEGACY_EVIDENCE_REASON = "Evidence cited in plain-text response."
 
 
 def _build_structured_response_schema() -> dict[str, Any]:
@@ -103,125 +117,22 @@ Examples:
 """
 
 
-def _parse_yes_no(text: str, mode: str) -> bool:
-    """Parse yes/no for a specific failure mode from a plain-text response."""
-    mode_escaped = mode.replace(".", r"\.")
-    patterns = [
-        rf"^\s*{mode_escaped}\b[^\n]*?:\s*(yes|no)\s*$",
-        rf"^\s*{mode_escaped}\s*[:\-]?\s*(yes|no)\s*$",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-        if match:
-            return match.group(1).lower() == "yes"
-    return False
-
-
-def _parse_id_list(raw_ids: str) -> list[str]:
-    parts = [part.strip().strip("'\"`") for part in raw_ids.split(",")]
-    filtered = [
-        part for part in parts if part and part.lower() not in {"none", "null", "n/a"}
-    ]
-    deduped: list[str] = []
-    for item in filtered:
-        if item not in deduped:
-            deduped.append(item)
-    return deduped
-
-
-def _ids_to_evidence_map(ids: list[str], reason: str) -> dict[str, str]:
-    return {item: reason for item in ids}
-
-
-def _parse_evidence_ids(text: str, mode: str) -> dict[str, str]:
-    mode_escaped = mode.replace(".", r"\.")
-    patterns = [
-        rf"^\s*(?:\[\s*{mode_escaped}\s*\]|{mode_escaped})[^\n]*?evidence(?:_ids)?\s*[:=]\s*\[([^\]]*)\]",
-        rf"^\s*(?:\[\s*{mode_escaped}\s*\]|{mode_escaped})[^\n]*?:?\s*\[([^\]]*)\]",
-    ]
-
-    for pattern in patterns:
-        matches = list(re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE))
-        for match in reversed(matches):
-            ids = _parse_id_list(match.group(1).strip())
-            return _ids_to_evidence_map(ids, _LEGACY_EVIDENCE_REASON)
-    return {}
-
-
-def _parse_response(response: str) -> EvaluationResult:
-    """Legacy parser for plain-text model output."""
-    cleaned = response.strip()
-    if cleaned.startswith("@@"):
-        cleaned = cleaned[2:]
-    if cleaned.endswith("@@"):
-        cleaned = cleaned[:-2]
-
-    summary_match = re.search(
-        r"A\.\s*(.+?)(?=B\.|$)", cleaned, re.DOTALL | re.IGNORECASE
-    )
-    summary = summary_match.group(1).strip() if summary_match else ""
-
-    task_match = re.search(r"B\.[^\n]*?(yes|no)\b", cleaned, re.IGNORECASE)
-    task_completed = task_match.group(1).lower() == "yes" if task_match else False
-
-    failure_modes = FailureModes(
-        disobey_task_specification=_parse_yes_no(cleaned, "1.1"),
-        disobey_role_specification=_parse_yes_no(cleaned, "1.2"),
-        step_repetition=_parse_yes_no(cleaned, "1.3"),
-        loss_of_conversation_history=_parse_yes_no(cleaned, "1.4"),
-        unaware_of_termination_conditions=_parse_yes_no(cleaned, "1.5"),
-        conversation_reset=_parse_yes_no(cleaned, "2.1"),
-        fail_to_ask_for_clarification=_parse_yes_no(cleaned, "2.2"),
-        task_derailment=_parse_yes_no(cleaned, "2.3"),
-        information_withholding=_parse_yes_no(cleaned, "2.4"),
-        ignored_other_agent_input=_parse_yes_no(cleaned, "2.5"),
-        action_reasoning_mismatch=_parse_yes_no(cleaned, "2.6"),
-        premature_termination=_parse_yes_no(cleaned, "3.1"),
-        no_or_incorrect_verification=_parse_yes_no(cleaned, "3.2"),
-        weak_verification=_parse_yes_no(cleaned, "3.3"),
-    )
-
-    failure_mode_evidence: dict[str, dict[str, str]] = {
-        code: _parse_evidence_ids(cleaned, code) for code in _FAILURE_MODE_CODES
-    }
-
-    return EvaluationResult(
-        summary=summary,
-        task_completed=task_completed,
-        failure_modes=failure_modes,
-        raw_response=response,
-        failure_mode_evidence=failure_mode_evidence,
-    )
-
-
 def _normalize_evidence_map(raw_evidence: Any) -> dict[str, str]:
-    if isinstance(raw_evidence, dict):
-        cleaned_map: dict[str, str] = {}
-        for raw_id, raw_reason in raw_evidence.items():
-            evidence_id = str(raw_id).strip()
-            if not evidence_id:
-                continue
-            if evidence_id.lower() in {"none", "null", "n/a"}:
-                continue
+    if not isinstance(raw_evidence, dict):
+        return {}
 
-            reason = str(raw_reason).strip() if raw_reason is not None else ""
-            cleaned_map[evidence_id] = reason or _DEFAULT_EVIDENCE_REASON
-        return cleaned_map
+    cleaned_map: dict[str, str] = {}
+    for raw_id, raw_reason in raw_evidence.items():
+        evidence_id = str(raw_id).strip()
+        if not evidence_id:
+            continue
+        if evidence_id.lower() in {"none", "null", "n/a"}:
+            continue
 
-    if isinstance(raw_evidence, list):
-        cleaned_ids: list[str] = []
-        for item in raw_evidence:
-            item_str = item if isinstance(item, str) else str(item)
-            normalized = item_str.strip()
-            if not normalized:
-                continue
-            if normalized.lower() in {"none", "null", "n/a"}:
-                continue
-            if normalized not in cleaned_ids:
-                cleaned_ids.append(normalized)
-        return _ids_to_evidence_map(cleaned_ids, _DEFAULT_EVIDENCE_REASON)
+        reason = str(raw_reason).strip() if raw_reason is not None else ""
+        cleaned_map[evidence_id] = reason or _DEFAULT_EVIDENCE_REASON
 
-    return {}
+    return cleaned_map
 
 
 def _parse_structured_response(
@@ -252,27 +163,15 @@ def _parse_structured_response(
 
         present_raw = mode_payload.get("present", False)
         present = present_raw if isinstance(present_raw, bool) else bool(present_raw)
-        evidence_map = _normalize_evidence_map(
-            mode_payload.get("evidence", mode_payload.get("evidence_ids", []))
-        )
+        evidence_map = _normalize_evidence_map(mode_payload.get("evidence", {}))
         mode_presence[code] = present
         mode_evidence[code] = evidence_map if present else {}
 
     failure_modes = FailureModes(
-        disobey_task_specification=mode_presence["1.1"],
-        disobey_role_specification=mode_presence["1.2"],
-        step_repetition=mode_presence["1.3"],
-        loss_of_conversation_history=mode_presence["1.4"],
-        unaware_of_termination_conditions=mode_presence["1.5"],
-        conversation_reset=mode_presence["2.1"],
-        fail_to_ask_for_clarification=mode_presence["2.2"],
-        task_derailment=mode_presence["2.3"],
-        information_withholding=mode_presence["2.4"],
-        ignored_other_agent_input=mode_presence["2.5"],
-        action_reasoning_mismatch=mode_presence["2.6"],
-        premature_termination=mode_presence["3.1"],
-        no_or_incorrect_verification=mode_presence["3.2"],
-        weak_verification=mode_presence["3.3"],
+        **{
+            field_name: mode_presence[code]
+            for code, field_name in _FAILURE_MODE_FIELD_MAP.items()
+        }
     )
 
     return EvaluationResult(

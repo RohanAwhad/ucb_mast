@@ -20,48 +20,6 @@ def sample_trace() -> str:
 
 
 @pytest.fixture
-def mock_openai_response() -> str:
-    """Mock OpenAI response for testing parsing."""
-    return """@@
-A. The task failed because the mathproxyagent repeatedly ignored the assistant's request for clarification about missing information. The assistant correctly identified that the problem lacked crucial data (total ribbon length), but the mathproxyagent kept responding with "Continue" instead of providing the needed information or acknowledging the issue.
-
-B. no
-
-C.
-1.1 Disobey Task Specification: no
-1.2 Disobey Role Specification: no
-1.3 Step Repetition: yes
-1.4 Loss of Conversation History: no
-1.5 Unaware of Termination Conditions: yes
-2.1 Conversation Reset: no
-2.2 Fail to Ask for Clarification: no
-2.3 Task Derailment: no
-2.4 Information Withholding: no
-2.5 Ignored Other Agent's Input: yes
-2.6 Action-Reasoning Mismatch: no
-3.1 Premature Termination: no
-3.2 No or Incorrect Verification: no
-3.3 Weak Verification: no
-
-D.
-1.1 Disobey Task Specification: []
-1.2 Disobey Role Specification: []
-1.3 Step Repetition: [m_0007, m_0010]
-1.4 Loss of Conversation History: []
-1.5 Unaware of Termination Conditions: [m_0010, m_0012]
-2.1 Conversation Reset: []
-2.2 Fail to Ask for Clarification: []
-2.3 Task Derailment: []
-2.4 Information Withholding: []
-2.5 Ignored Other Agent's Input: [m_0008]
-2.6 Action-Reasoning Mismatch: []
-3.1 Premature Termination: []
-3.2 No or Incorrect Verification: []
-3.3 Weak Verification: []
-@@"""
-
-
-@pytest.fixture
 def mock_structured_payload() -> dict[str, object]:
     """Mock structured output for schema-based model calls."""
     codes = [
@@ -117,50 +75,23 @@ def mock_structured_payload() -> dict[str, object]:
     }
 
 
-def test_parse_response(mock_openai_response: str) -> None:
-    """Test that response parsing works correctly."""
-    from mast.evaluator import _parse_response
+def test_parse_structured_response(
+    mock_structured_payload: dict[str, object],
+) -> None:
+    """Structured parser should return mode booleans and evidence map."""
+    from mast.evaluator import _parse_structured_response
 
-    result = _parse_response(mock_openai_response)
+    raw_payload = json.dumps(mock_structured_payload)
+    result = _parse_structured_response(mock_structured_payload, raw_payload)
 
     assert isinstance(result, EvaluationResult)
     assert result.task_completed is False
-    assert (
-        "mathproxyagent" in result.summary.lower()
-        or "ignored" in result.summary.lower()
-    )
-
-    # Check specific failure modes
     assert result.failure_modes.step_repetition is True
     assert result.failure_modes.unaware_of_termination_conditions is True
     assert result.failure_modes.ignored_other_agent_input is True
-    assert result.failure_modes.disobey_task_specification is False
-    assert result.failure_modes.task_derailment is False
-    assert sorted(result.failure_mode_evidence["1.3"].keys()) == ["m_0007", "m_0010"]
-    assert sorted(result.failure_mode_evidence["1.5"].keys()) == ["m_0010", "m_0012"]
-    assert sorted(result.failure_mode_evidence["2.5"].keys()) == ["m_0008"]
-
-
-def test_parse_response_bracketed_mode_evidence() -> None:
-    """Support bracketed mode format like [2.6] ...: [id1, id2]."""
-    from mast.evaluator import _parse_response
-
-    response = """@@
-A. Action-reasoning mismatch was observed.
-B. yes
-C.
-2.6 Action-Reasoning Mismatch: yes
-3.2 No or Incorrect Verification: yes
-D.
-[2.6] Action-Reasoning Mismatch: [abc, def, xyz]
-[3.2] No or Incorrect Verification: [m_0021, tr_0007]
-@@"""
-
-    result = _parse_response(response)
-    assert result.failure_modes.action_reasoning_mismatch is True
     assert result.failure_modes.no_or_incorrect_verification is True
-    assert sorted(result.failure_mode_evidence["2.6"].keys()) == ["abc", "def", "xyz"]
-    assert sorted(result.failure_mode_evidence["3.2"].keys()) == ["m_0021", "tr_0007"]
+    assert result.failure_mode_evidence["3.2"]["m_0017"]
+    assert result.failure_mode_evidence["3.2"]["tr_0007"]
 
 
 def test_failure_modes_to_dict() -> None:
