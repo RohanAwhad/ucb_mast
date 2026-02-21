@@ -243,6 +243,31 @@ def test_evaluate_with_mocked_provider(
     assert sorted(result.failure_mode_evidence["3.2"].keys()) == ["m_0017", "tr_0007"]
 
 
+def test_evaluate_truncates_trace_before_model_call(
+    mock_structured_payload: dict[str, object],
+) -> None:
+    raw_payload = json.dumps(mock_structured_payload)
+    trace = "abcdefghij"
+
+    with (
+        patch("mast.evaluator._load_definitions", return_value=""),
+        patch("mast.evaluator._load_examples", return_value="EXAMPLES"),
+        patch(
+            "mast.evaluator._call_openai",
+            return_value=(mock_structured_payload, raw_payload),
+        ) as mocked_call,
+    ):
+        evaluate([trace], model_name="openai/gpt-5.2", max_trace_length=10)
+
+    prompt = mocked_call.call_args[0][0]
+    assert "Trace:\nab\n" in prompt
+
+
+def test_evaluate_rejects_unknown_model(sample_trace: str) -> None:
+    with pytest.raises(ValueError, match="Unknown model"):
+        evaluate([sample_trace], model_name=cast(ModelName, "unknown/model"))
+
+
 @pytest.mark.integration
 def test_evaluate_e2e(sample_trace: str) -> None:
     """

@@ -1,9 +1,11 @@
-from typing import Any
+from typing import Any, Mapping
 
 from .contracts import (
     DEFAULT_EVIDENCE_REASON,
+    FailureModesPayload,
     FAILURE_MODE_CODES,
     FAILURE_MODE_FIELD_MAP,
+    StructuredResponsePayload,
 )
 from .models import EvaluationResult, FailureModes
 
@@ -24,7 +26,7 @@ def _normalize_evidence_map(raw_evidence: dict[str, Any]) -> dict[str, str]:
 
 
 def _require_string(
-    payload: dict[str, Any],
+    payload: Mapping[str, Any],
     key: str,
     error_key: str | None = None,
 ) -> str:
@@ -36,7 +38,7 @@ def _require_string(
 
 
 def _require_bool(
-    payload: dict[str, Any],
+    payload: Mapping[str, Any],
     key: str,
     error_key: str | None = None,
 ) -> bool:
@@ -48,14 +50,18 @@ def _require_bool(
 
 
 def _parse_failure_mode(
-    failure_modes_payload: dict[str, Any],
+    failure_modes_payload: FailureModesPayload,
     code: str,
 ) -> tuple[bool, dict[str, str]]:
     mode_payload = failure_modes_payload.get(code)
     if not isinstance(mode_payload, dict):
         raise ValueError(f"Structured response missing mode payload for {code}")
 
-    present = _require_bool(mode_payload, "present", f"failure_modes.{code}.present")
+    present = _require_bool(
+        mode_payload,
+        "present",
+        f"failure_modes.{code}.present",
+    )
 
     raw_evidence = mode_payload.get("evidence")
     if not isinstance(raw_evidence, dict):
@@ -68,7 +74,7 @@ def _parse_failure_mode(
 
 
 def parse_structured_response(
-    payload: dict[str, Any],
+    payload: StructuredResponsePayload | dict[str, Any],
     raw_response: str,
 ) -> EvaluationResult:
     summary = _require_string(payload, "summary")
@@ -78,11 +84,13 @@ def parse_structured_response(
     if not isinstance(failure_modes_payload, dict):
         raise ValueError("Structured response missing failure_modes object")
 
+    failure_modes_payload_typed = failure_modes_payload
+
     mode_presence: dict[str, bool] = {}
     mode_evidence: dict[str, dict[str, str]] = {}
 
     for code in FAILURE_MODE_CODES:
-        present, evidence = _parse_failure_mode(failure_modes_payload, code)
+        present, evidence = _parse_failure_mode(failure_modes_payload_typed, code)
         mode_presence[code] = present
         mode_evidence[code] = evidence
 

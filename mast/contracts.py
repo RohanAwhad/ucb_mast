@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, TypeAlias, TypedDict
 
 FAILURE_MODE_CODES = (
     "1.1",
@@ -35,6 +35,20 @@ FAILURE_MODE_FIELD_MAP = {
 }
 
 DEFAULT_EVIDENCE_REASON = "Judge cited this transcript ID as evidence."
+
+
+class FailureModePayload(TypedDict):
+    present: bool
+    evidence: dict[str, str]
+
+
+FailureModesPayload: TypeAlias = dict[str, FailureModePayload]
+
+
+class StructuredResponsePayload(TypedDict):
+    summary: str
+    task_completed: bool
+    failure_modes: FailureModesPayload
 
 
 def build_structured_response_schema() -> dict[str, Any]:

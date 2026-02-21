@@ -5,7 +5,7 @@ from typing import Any, cast
 from anthropic import AnthropicVertex
 from openai import OpenAI
 
-from .contracts import STRUCTURED_RESPONSE_SCHEMA
+from .contracts import STRUCTURED_RESPONSE_SCHEMA, StructuredResponsePayload
 
 _ANTHROPIC_TOOL_NAME = "submit_mast_evaluation"
 
@@ -13,7 +13,7 @@ _ANTHROPIC_TOOL_NAME = "submit_mast_evaluation"
 def call_openai(
     prompt: str,
     api_key: str | None = None,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[StructuredResponsePayload, str]:
     """Call OpenAI API with structured JSON schema output."""
     client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
 
@@ -40,14 +40,14 @@ def call_openai(
     if not isinstance(payload, dict):
         raise ValueError("OpenAI structured output is not a JSON object")
 
-    return payload, output_text
+    return cast(StructuredResponsePayload, payload), output_text
 
 
 def call_anthropic_vertex(
     prompt: str,
     project_id: str | None = None,
     region: str = "us-east5",
-) -> tuple[dict[str, Any], str]:
+) -> tuple[StructuredResponsePayload, str]:
     """Call Anthropic Claude via Vertex AI with a forced tool schema."""
     resolved_project_id = project_id or os.environ.get("GOOGLE_CLOUD_PROJECT")
     if resolved_project_id is None:
@@ -84,6 +84,6 @@ def call_anthropic_vertex(
             continue
         tool_input = getattr(block, "input", None)
         if isinstance(tool_input, dict):
-            return tool_input, json.dumps(tool_input)
+            return cast(StructuredResponsePayload, tool_input), json.dumps(tool_input)
 
     raise ValueError("Anthropic response missing structured tool output")
