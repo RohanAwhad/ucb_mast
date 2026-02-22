@@ -77,7 +77,7 @@ def format_result(result: EvaluationResult) -> str:
             if evidence_map:
                 evidence_parts = [
                     f"{evidence_id}: {reason}"
-                    for evidence_id, reason in evidence_map.items()
+                    for evidence_id, reason in sorted(evidence_map.items())
                 ]
                 evidence_text = "; ".join(evidence_parts)
             else:

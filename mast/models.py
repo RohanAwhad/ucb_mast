@@ -81,16 +81,6 @@ class FailureModes:
     no_or_incorrect_verification: bool  # 3.2
     weak_verification: bool  # 3.3
 
-    @staticmethod
-    def get_definition(code: str) -> dict[str, str] | None:
-        """Get the name and definition for a failure mode code (e.g., '1.3')."""
-        return FAILURE_MODE_DEFINITIONS.get(code)
-
-    @staticmethod
-    def get_all_definitions() -> dict[str, dict[str, str]]:
-        """Get all failure mode definitions."""
-        return FAILURE_MODE_DEFINITIONS
-
     def get_detected(self) -> list[dict[str, str]]:
         """Get list of detected failure modes with their definitions.
 

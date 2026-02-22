@@ -1,10 +1,16 @@
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 
-from mast import EvaluationResult, FailureModes, evaluate
+from mast import EvaluationResult, FailureModes, ModelName, evaluate
+from mast.contracts import (
+    FAILURE_MODE_CODES,
+    FAILURE_MODE_FIELD_MAP,
+    STRUCTURED_RESPONSE_SCHEMA,
+)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -17,48 +23,6 @@ def sample_trace() -> str:
     # Convert trajectory to string format
     trajectory = data.get("trajectory", [])
     return json.dumps(trajectory, indent=2)
-
-
-@pytest.fixture
-def mock_openai_response() -> str:
-    """Mock OpenAI response for testing parsing."""
-    return """@@
-A. The task failed because the mathproxyagent repeatedly ignored the assistant's request for clarification about missing information. The assistant correctly identified that the problem lacked crucial data (total ribbon length), but the mathproxyagent kept responding with "Continue" instead of providing the needed information or acknowledging the issue.
-
-B. no
-
-C.
-1.1 Disobey Task Specification: no
-1.2 Disobey Role Specification: no
-1.3 Step Repetition: yes
-1.4 Loss of Conversation History: no
-1.5 Unaware of Termination Conditions: yes
-2.1 Conversation Reset: no
-2.2 Fail to Ask for Clarification: no
-2.3 Task Derailment: no
-2.4 Information Withholding: no
-2.5 Ignored Other Agent's Input: yes
-2.6 Action-Reasoning Mismatch: no
-3.1 Premature Termination: no
-3.2 No or Incorrect Verification: no
-3.3 Weak Verification: no
-
-D.
-1.1 Disobey Task Specification: []
-1.2 Disobey Role Specification: []
-1.3 Step Repetition: [m_0007, m_0010]
-1.4 Loss of Conversation History: []
-1.5 Unaware of Termination Conditions: [m_0010, m_0012]
-2.1 Conversation Reset: []
-2.2 Fail to Ask for Clarification: []
-2.3 Task Derailment: []
-2.4 Information Withholding: []
-2.5 Ignored Other Agent's Input: [m_0008]
-2.6 Action-Reasoning Mismatch: []
-3.1 Premature Termination: []
-3.2 No or Incorrect Verification: []
-3.3 Weak Verification: []
-@@"""
 
 
 @pytest.fixture
@@ -117,50 +81,90 @@ def mock_structured_payload() -> dict[str, object]:
     }
 
 
-def test_parse_response(mock_openai_response: str) -> None:
-    """Test that response parsing works correctly."""
-    from mast.evaluator import _parse_response
+def test_parse_structured_response(
+    mock_structured_payload: dict[str, object],
+) -> None:
+    """Structured parser should return mode booleans and evidence map."""
+    from mast.structured_output import parse_structured_response
 
-    result = _parse_response(mock_openai_response)
+    raw_payload = json.dumps(mock_structured_payload)
+    result = parse_structured_response(mock_structured_payload, raw_payload)
 
     assert isinstance(result, EvaluationResult)
     assert result.task_completed is False
-    assert (
-        "mathproxyagent" in result.summary.lower()
-        or "ignored" in result.summary.lower()
-    )
-
-    # Check specific failure modes
     assert result.failure_modes.step_repetition is True
     assert result.failure_modes.unaware_of_termination_conditions is True
     assert result.failure_modes.ignored_other_agent_input is True
-    assert result.failure_modes.disobey_task_specification is False
-    assert result.failure_modes.task_derailment is False
-    assert sorted(result.failure_mode_evidence["1.3"].keys()) == ["m_0007", "m_0010"]
-    assert sorted(result.failure_mode_evidence["1.5"].keys()) == ["m_0010", "m_0012"]
-    assert sorted(result.failure_mode_evidence["2.5"].keys()) == ["m_0008"]
-
-
-def test_parse_response_bracketed_mode_evidence() -> None:
-    """Support bracketed mode format like [2.6] ...: [id1, id2]."""
-    from mast.evaluator import _parse_response
-
-    response = """@@
-A. Action-reasoning mismatch was observed.
-B. yes
-C.
-2.6 Action-Reasoning Mismatch: yes
-3.2 No or Incorrect Verification: yes
-D.
-[2.6] Action-Reasoning Mismatch: [abc, def, xyz]
-[3.2] No or Incorrect Verification: [m_0021, tr_0007]
-@@"""
-
-    result = _parse_response(response)
-    assert result.failure_modes.action_reasoning_mismatch is True
     assert result.failure_modes.no_or_incorrect_verification is True
-    assert sorted(result.failure_mode_evidence["2.6"].keys()) == ["abc", "def", "xyz"]
-    assert sorted(result.failure_mode_evidence["3.2"].keys()) == ["m_0021", "tr_0007"]
+    assert result.failure_mode_evidence["3.2"]["m_0017"]
+    assert result.failure_mode_evidence["3.2"]["tr_0007"]
+
+
+def test_parse_structured_response_rejects_non_bool_task_completed(
+    mock_structured_payload: dict[str, object],
+) -> None:
+    from mast.structured_output import parse_structured_response
+
+    payload = dict(mock_structured_payload)
+    payload["task_completed"] = "yes"
+
+    with pytest.raises(ValueError, match="task_completed"):
+        parse_structured_response(payload, json.dumps(payload))
+
+
+def test_parse_structured_response_rejects_non_bool_mode_present(
+    mock_structured_payload: dict[str, object],
+) -> None:
+    from mast.structured_output import parse_structured_response
+
+    payload = dict(mock_structured_payload)
+    failure_modes = cast(dict[str, object], payload["failure_modes"]).copy()
+    mode_11 = cast(dict[str, object], failure_modes["1.1"]).copy()
+    mode_11["present"] = "no"
+    failure_modes["1.1"] = mode_11
+    payload["failure_modes"] = failure_modes
+
+    with pytest.raises(ValueError, match="present"):
+        parse_structured_response(payload, json.dumps(payload))
+
+
+def test_parse_structured_response_rejects_missing_failure_mode_payload(
+    mock_structured_payload: dict[str, object],
+) -> None:
+    from mast.structured_output import parse_structured_response
+
+    payload = dict(mock_structured_payload)
+    failure_modes = cast(dict[str, object], payload["failure_modes"]).copy()
+    del failure_modes["2.4"]
+    payload["failure_modes"] = failure_modes
+
+    with pytest.raises(ValueError, match="2.4"):
+        parse_structured_response(payload, json.dumps(payload))
+
+
+def test_parse_structured_response_rejects_non_object_evidence(
+    mock_structured_payload: dict[str, object],
+) -> None:
+    from mast.structured_output import parse_structured_response
+
+    payload = dict(mock_structured_payload)
+    failure_modes = cast(dict[str, object], payload["failure_modes"]).copy()
+    mode_33 = cast(dict[str, object], failure_modes["3.3"]).copy()
+    mode_33["present"] = True
+    mode_33["evidence"] = ["m_0001"]
+    failure_modes["3.3"] = mode_33
+    payload["failure_modes"] = failure_modes
+
+    with pytest.raises(ValueError, match=r"3\.3\.evidence"):
+        parse_structured_response(payload, json.dumps(payload))
+
+
+def test_contract_schema_and_mapping_alignment() -> None:
+    schema_required = STRUCTURED_RESPONSE_SCHEMA["properties"]["failure_modes"][
+        "required"
+    ]
+    assert list(FAILURE_MODE_CODES) == schema_required
+    assert set(FAILURE_MODE_CODES) == set(FAILURE_MODE_FIELD_MAP)
 
 
 def test_failure_modes_to_dict() -> None:
@@ -189,17 +193,45 @@ def test_failure_modes_to_dict() -> None:
     assert len(d) == 14
 
 
-def test_evaluate_with_mock(
+def test_failure_modes_get_detected() -> None:
+    fm = FailureModes(
+        disobey_task_specification=False,
+        disobey_role_specification=False,
+        step_repetition=True,
+        loss_of_conversation_history=False,
+        unaware_of_termination_conditions=False,
+        conversation_reset=False,
+        fail_to_ask_for_clarification=False,
+        task_derailment=False,
+        information_withholding=False,
+        ignored_other_agent_input=True,
+        action_reasoning_mismatch=False,
+        premature_termination=False,
+        no_or_incorrect_verification=False,
+        weak_verification=False,
+    )
+
+    detected = fm.get_detected()
+    assert [item["code"] for item in detected] == ["1.3", "2.5"]
+
+
+@pytest.mark.parametrize(
+    ("patch_target", "model_name"),
+    [
+        ("mast.evaluator._call_openai", "openai/gpt-5.2"),
+        ("mast.evaluator._call_anthropic_vertex", "vertex/claude-opus-4-6"),
+    ],
+)
+def test_evaluate_with_mocked_provider(
     sample_trace: str,
     mock_structured_payload: dict[str, object],
+    patch_target: str,
+    model_name: str,
 ) -> None:
-    """Test evaluate function with mocked OpenAI call."""
+    """Test evaluate function with mocked model provider calls."""
     raw_payload = json.dumps(mock_structured_payload)
-    with patch(
-        "mast.evaluator._call_openai",
-        return_value=(mock_structured_payload, raw_payload),
-    ):
-        results = evaluate([sample_trace])
+    with patch(patch_target, return_value=(mock_structured_payload, raw_payload)):
+        results = evaluate([sample_trace], model_name=cast(ModelName, model_name))
 
     assert len(results) == 1
     result = results[0]
@@ -211,24 +243,29 @@ def test_evaluate_with_mock(
     assert sorted(result.failure_mode_evidence["3.2"].keys()) == ["m_0017", "tr_0007"]
 
 
-def test_evaluate_with_mock_vertex(
-    sample_trace: str,
+def test_evaluate_truncates_trace_before_model_call(
     mock_structured_payload: dict[str, object],
 ) -> None:
-    """Test evaluate function with mocked Anthropic Vertex call."""
     raw_payload = json.dumps(mock_structured_payload)
-    with patch(
-        "mast.evaluator._call_anthropic_vertex",
-        return_value=(mock_structured_payload, raw_payload),
-    ):
-        results = evaluate([sample_trace], model_name="vertex/claude-opus-4-6")
+    trace = "abcdefghij"
 
-    assert len(results) == 1
-    result = results[0]
-    assert isinstance(result, EvaluationResult)
-    assert result.task_completed is False
-    assert result.failure_modes.ignored_other_agent_input is True
-    assert result.failure_modes.no_or_incorrect_verification is True
+    with (
+        patch("mast.evaluator._load_definitions", return_value=""),
+        patch("mast.evaluator._load_examples", return_value="EXAMPLES"),
+        patch(
+            "mast.evaluator._call_openai",
+            return_value=(mock_structured_payload, raw_payload),
+        ) as mocked_call,
+    ):
+        evaluate([trace], model_name="openai/gpt-5.2", max_trace_length=10)
+
+    prompt = mocked_call.call_args[0][0]
+    assert "Trace:\nab\n" in prompt
+
+
+def test_evaluate_rejects_unknown_model(sample_trace: str) -> None:
+    with pytest.raises(ValueError, match="Unknown model"):
+        evaluate([sample_trace], model_name=cast(ModelName, "unknown/model"))
 
 
 @pytest.mark.integration
